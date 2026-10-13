@@ -1,0 +1,53 @@
+package com.grillpoet.animy.domain.model
+
+import androidx.compose.ui.geometry.Offset
+
+/**
+ * 元素经过 transform 后的 AABB（轴对齐包围盒）。
+ *
+ * 用途：绘制选中框、命中测试。
+ *
+ * 实现：取原始矩形的四个角，依次做「绕中心旋转 → 缩放 → 平移」，
+ * 然后取四点的 AABB。旋转角度为 0 时退化为简单矩形。
+ */
+fun DrawElement.transformedBounds(): Rect {
+    val raw = when (this) {
+        is VectorStroke -> bounds()
+        is BitmapElement -> Rect(0f, 0f, width.toFloat(), height.toFloat())
+    }
+    if (raw.isEmpty) return raw
+    if (transform.isIdentity) return raw
+    return raw.applyTransform(transform)
+}
+
+private fun Rect.applyTransform(t: ElementTransform): Rect {
+    // 绕矩形视觉中心旋转 —— 与 BitmapCompositor 的渲染 pivot 保持一致
+    val cx = left + width / 2f
+    val cy = top + height / 2f
+    val rad = Math.toRadians(t.rotation.toDouble())
+    val cos = kotlin.math.cos(rad).toFloat()
+    val sin = kotlin.math.sin(rad).toFloat()
+
+    fun tf(x: Float, y: Float): Offset {
+        var dx = x - cx
+        var dy = y - cy
+        val rx = dx * cos - dy * sin
+        val ry = dx * sin + dy * cos
+        dx = rx * t.scale
+        dy = ry * t.scale
+        return Offset(t.offset.x + cx + dx, t.offset.y + cy + dy)
+    }
+
+    val corners = listOf(
+        tf(left, top),
+        tf(right, top),
+        tf(left, bottom),
+        tf(right, bottom),
+    )
+    return Rect(
+        corners.minOf { it.x },
+        corners.minOf { it.y },
+        corners.maxOf { it.x },
+        corners.maxOf { it.y },
+    )
+}

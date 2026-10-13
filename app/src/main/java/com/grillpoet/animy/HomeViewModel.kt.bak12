@@ -1,0 +1,68 @@
+package com.grillpoet.animy
+
+import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.grillpoet.animy.core.ProjectMode
+import com.grillpoet.animy.core.Project
+import com.grillpoet.animy.core.persistence.ProjectStore
+import kotlinx.coroutines.launch
+
+class HomeViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val store = ProjectStore(app)
+
+    var projects by mutableStateOf<List<ProjectStore.Summary>>(emptyList())
+        private set
+    var loading by mutableStateOf(true)
+        private set
+
+    init { refresh() }
+
+    fun refresh() {
+        viewModelScope.launch {
+            loading = true
+            projects = store.list()
+            loading = false
+        }
+    }
+
+    fun rename(id: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            store.rename(id, trimmed)
+            refresh()
+        }
+    }
+
+    fun delete(id: String) {
+        viewModelScope.launch {
+            store.delete(id)
+            refresh()
+        }
+    }
+
+    /** 创建空项目并立即落盘，返回新 id */
+    fun createProject(mode: Mode, name: String): String {
+        val prefix = if (mode == Mode.Paint) "paint" else "anim"
+        val id = prefix + "-" + System.currentTimeMillis() + "-" + (1000..9999).random()
+
+        val projectMode =
+            if (mode == Mode.Paint) ProjectMode.Paint else ProjectMode.Animation
+
+        val displayName = name.trim().ifEmpty {
+            if (mode == Mode.Paint) "未命名绘画" else "未命名动画"
+        }
+
+        viewModelScope.launch {
+            val empty = Project(name = displayName, mode = projectMode)
+            store.save(empty, id)
+            refresh()
+        }
+        return id
+    }
+}

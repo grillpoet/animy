@@ -1,0 +1,49 @@
+package com.grillpoet.animy
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.grillpoet.animy.feature.AnimationScreen
+import com.grillpoet.animy.feature.PaintScreen
+import com.grillpoet.animy.ui.theme.AnimYTheme
+
+sealed interface Screen {
+    data object Home : Screen
+    data class Editor(val mode: Mode, val projectId: String) : Screen
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            AnimYTheme {
+                Surface {
+                    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+
+                    when (val s = screen) {
+                        Screen.Home -> HomeScreen(
+                            onOpen = { mode, id ->
+                                screen = Screen.Editor(mode, id)
+                            }
+                        )
+                        is Screen.Editor -> when (s.mode) {
+                            Mode.Animation -> AnimationScreen(
+                                projectId = s.projectId,
+                                onBack = { screen = Screen.Home },
+                            )
+                            Mode.Paint -> PaintScreen(
+                                projectId = s.projectId,
+                                onBack = { screen = Screen.Home },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

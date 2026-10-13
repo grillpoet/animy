@@ -1,0 +1,763 @@
+package com.grillpoet.animy.editor.components
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.magnifier
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import com.grillpoet.animy.data.render.BitmapCompositor
+import com.grillpoet.animy.data.render.RenderCache
+import com.grillpoet.animy.domain.model.BitmapElement
+import com.grillpoet.animy.domain.model.BrushStyle
+import com.grillpoet.animy.domain.model.BrushType
+import com.grillpoet.animy.domain.model.DrawElement
+import com.grillpoet.animy.domain.model.Frame
+import com.grillpoet.animy.domain.model.Rect
+import com.grillpoet.animy.domain.model.ShapeType
+import com.grillpoet.animy.domain.model.StrokePoint
+import com.grillpoet.animy.domain.model.transformedBounds
+import com.grillpoet.animy.domain.selection.FloatingSelection
+import com.grillpoet.animy.domain.selection.Selection
+import com.grillpoet.animy.editor.ActiveTool
+import com.grillpoet.animy.editor.OnionSkin
+import com.grillpoet.animy.editor.SelectTool
+import com.grillpoet.animy.editor.Viewport
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.random.Random
+
+@Composable
+fun DrawingCanvas(
+    frame: Frame,
+    canvasSize: IntSize,
+    background: Color,
+    viewport: Viewport,
+    liveStroke: List<StrokePoint>,
+    liveBrush: BrushStyle,
+    liveStrokeId: Long?,
+    showGrid: Boolean,
+    onion: OnionSkin,
+    prevFrames: List<Frame>,
+    nextFrames: List<Frame>,
+    floatingSelection: FloatingSelection?,
+    draftPath: List<Offset>,
+    draftStart: Offset?,
+    draftEnd: Offset?,
+    draftShapeStart: Offset?,
+    draftShapeEnd: Offset?,
+    shapeTool: ShapeType,
+    shapeFilled: Boolean,
+    shapeBrush: BrushStyle,
+    selectTool: SelectTool,
+    selectedElement: DrawElement?,
+    currentLayerIndex: Int,
+    eyedropper: Boolean,
+    renderCache: RenderCache,
+    liquifyPreview: ImageBitmap?,
+    liquifyLayerIndex: Int?,
+    modifier: Modifier = Modifier,
+) {
+    val hasLive = liveStroke.size >= 2
+    val isEraseLive = hasLive && liveBrush.isEraser
+
+    val displayFrame = remember(frame, liquifyPreview, liquifyLayerIndex) {
+        if (liquifyPreview != null && liquifyLayerIndex != null) {
+            val layers = frame.layers.toMutableList()
+            val orig = layers.getOrNull(liquifyLayerIndex)
+            if (orig != null) {
+                val bmpElement = BitmapElement(
+                    id = -1L,
+                    image = liquifyPreview,
+                    label = "液化",
+                )
+                layers[liquifyLayerIndex] = orig.copy(elements = listOf(bmpElement))
+            }
+            frame.copy(layers = layers)
+        } else frame
+    }
+
+    val frameBitmap: ImageBitmap? = remember(displayFrame, canvasSize) {
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) null
+        else runCatching {
+            renderCache.getOrRender(displayFrame, canvasSize, Color.Transparent)
+        }.getOrNull()
+    }
+
+    val otherLayersBmp: ImageBitmap? = remember(frame, currentLayerIndex, canvasSize, isEraseLive) {
+        if (!isEraseLive) null
+        else if (canvasSize.width <= 0 || canvasSize.height <= 0) null
+        else runCatching {
+            renderCache.getOrRenderExcluding(
+                frame, currentLayerIndex, canvasSize, Color.Transparent,
+            )
+        }.getOrNull()
+    }
+
+    val currentLayerBmp: ImageBitmap? = remember(frame, currentLayerIndex, canvasSize, isEraseLive) {
+        if (!isEraseLive) null
+        else if (canvasSize.width <= 0 || canvasSize.height <= 0) null
+        else runCatching {
+            val layer = frame.layers.getOrNull(currentLayerIndex) ?: return@runCatching null
+            renderCache.getOrRenderLayer(layer, canvasSize)
+        }.getOrNull()
+    }
+
+    val prevBitmaps = remember(prevFrames, canvasSize) {
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) emptyList()
+        else prevFrames.mapNotNull {
+            runCatching { BitmapCompositor.renderFrame(it, canvasSize, Color.Transparent) }.getOrNull()
+        }
+    }
+    val nextBitmaps = remember(nextFrames, canvasSize) {
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) emptyList()
+        else nextFrames.mapNotNull {
+            runCatching { BitmapCompositor.renderFrame(it, canvasSize, Color.Transparent) }.getOrNull()
+        }
+    }
+
+    var magnifierPosition by remember { mutableStateOf<Offset?>(null) }
+
+    val magnifierModifier = if (eyedropper) {
+        Modifier
+            .magnifier(
+                sourceCenter = { magnifierPosition ?: Offset.Unspecified },
+                magnifierCenter = {
+                    magnifierPosition?.let { p -> p + Offset(0f, -140f) } ?: Offset.Unspecified
+                },
+                zoom = 2.5f,
+                size = DpSize(140.dp, 140.dp),
+                cornerRadius = 70.dp,
+            )
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val pressed = event.changes.filter { it.pressed }
+                        magnifierPosition = if (pressed.isNotEmpty())
+                            pressed.first().position
+                        else null
+                    }
+                }
+            }
+    } else Modifier
+
+    Canvas(
+        modifier
+            .fillMaxSize()
+            .then(magnifierModifier)
+    ) {
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@Canvas
+
+        val cw = canvasSize.width.toFloat()
+        val ch = canvasSize.height.toFloat()
+        val s = viewport.scale
+        if (s.isNaN() || s <= 0f) return@Canvas
+
+        val origin = viewport.origin
+
+        drawRect(
+            color = Color.Black.copy(alpha = 0.08f),
+            topLeft = origin + Offset(4f, 4f),
+            size = Size(cw * s, ch * s),
+        )
+
+        withTransform({
+            translate(origin.x, origin.y)
+            scale(s, s, pivot = Offset.Zero)
+        }) {
+            drawRect(background, size = Size(cw, ch))
+
+            if (showGrid) drawGrid(cw, ch)
+
+            if (onion.enabled && (prevBitmaps.isNotEmpty() || nextBitmaps.isNotEmpty())) {
+                val prevN = prevBitmaps.size
+                val prevFilter = if (onion.tintPrev != Color.Unspecified)
+                    ColorFilter.tint(onion.tintPrev, BlendMode.SrcAtop) else null
+                prevBitmaps.forEachIndexed { i, bmp ->
+                    val alpha = onion.prevAlpha * (i + 1).toFloat() / prevN.coerceAtLeast(1)
+                    drawImage(
+                        image = bmp,
+                        alpha = alpha.coerceIn(0f, 1f),
+                        colorFilter = prevFilter,
+                    )
+                }
+                val nextN = nextBitmaps.size
+                val nextFilter = if (onion.tintNext != Color.Unspecified)
+                    ColorFilter.tint(onion.tintNext, BlendMode.SrcAtop) else null
+                nextBitmaps.forEachIndexed { i, bmp ->
+                    val alpha = onion.nextAlpha * (nextN - i).toFloat() / nextN.coerceAtLeast(1)
+                    drawImage(
+                        image = bmp,
+                        alpha = alpha.coerceIn(0f, 1f),
+                        colorFilter = nextFilter,
+                    )
+                }
+            }
+
+            if (isEraseLive && otherLayersBmp != null && currentLayerBmp != null) {
+                drawImage(otherLayersBmp)
+                drawIntoCanvas { canvas ->
+                    canvas.saveLayer(
+                        androidx.compose.ui.geometry.Rect(0f, 0f, cw, ch),
+                        Paint(),
+                    )
+                    drawImage(currentLayerBmp)
+                    drawLiveStroke(liveStroke, liveBrush, liveStrokeId)
+                    canvas.restore()
+                }
+            } else {
+                frameBitmap?.let { drawImage(it) }
+                if (hasLive) drawLiveStroke(liveStroke, liveBrush, liveStrokeId)
+            }
+
+            floatingSelection?.let { fs ->
+                drawFloatingFrame(fs)
+            }
+
+            when {
+                draftPath.size >= 2 -> drawDraftPath(draftPath)
+                draftStart != null && draftEnd != null -> drawDraftShape(draftStart, draftEnd, selectTool)
+                draftShapeStart != null && draftShapeEnd != null ->
+                    drawDraftShapeElement(draftShapeStart, draftShapeEnd, shapeTool, shapeFilled, shapeBrush)
+            }
+
+            if (floatingSelection == null) {
+                selectedElement?.let { drawElementFrame(it) }
+            }
+        }
+
+        if (eyedropper && magnifierPosition != null) {
+            val p = magnifierPosition!!
+            val crossSize = 16f
+            drawLine(Color.Black.copy(alpha = 0.5f), Offset(p.x - crossSize, p.y), Offset(p.x + crossSize, p.y), 3f)
+            drawLine(Color.Black.copy(alpha = 0.5f), Offset(p.x, p.y - crossSize), Offset(p.x, p.y + crossSize), 3f)
+            drawLine(Color.White, Offset(p.x - crossSize, p.y), Offset(p.x + crossSize, p.y), 1.5f)
+            drawLine(Color.White, Offset(p.x, p.y - crossSize), Offset(p.x, p.y + crossSize), 1.5f)
+        }
+
+        drawRect(
+            color = Color.Black.copy(alpha = 0.25f),
+            topLeft = origin,
+            size = Size(cw * s, ch * s),
+            style = Stroke(1.5f),
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  网格
+// ═══════════════════════════════════════════════════════════════
+
+private fun DrawScope.drawGrid(cw: Float, ch: Float) {
+    val gridColor = Color.Black.copy(alpha = 0.10f)
+    val centerColor = Color.Black.copy(alpha = 0.25f)
+    for (i in 1 until 10) {
+        val x = cw * i / 10f
+        drawLine(gridColor, Offset(x, 0f), Offset(x, ch), strokeWidth = 1f)
+    }
+    for (i in 1 until 10) {
+        val y = ch * i / 10f
+        drawLine(gridColor, Offset(0f, y), Offset(cw, y), strokeWidth = 1f)
+    }
+    drawLine(centerColor, Offset(cw / 2f, 0f), Offset(cw / 2f, ch), strokeWidth = 1.5f)
+    drawLine(centerColor, Offset(0f, ch / 2f), Offset(cw, ch / 2f), strokeWidth = 1.5f)
+}
+
+/**
+ * 浮动选区虚线框。
+ *
+ * 跟随 rotation 和 scale —— 与 FloatingSelectionLayer 的变换语义一致。
+ * 用 withTransform 包裹旋转，pivot 是浮动内容中心。
+ */
+private fun DrawScope.drawFloatingFrame(fs: FloatingSelection) {
+    val w = fs.image.width * fs.transform.scale
+    val h = fs.image.height * fs.transform.scale
+    if (w <= 0f || h <= 0f) return
+
+    // 浮动内容中心（画布坐标）
+    val cx = fs.canvasLeft + w / 2f
+    val cy = fs.canvasTop + h / 2f
+
+    val topLeft = Offset(cx - w / 2f, cy - h / 2f)
+    val size = Size(w, h)
+
+    val accent = Color(0xFF4A90E2)
+    val strokeStyle = Stroke(
+        width = 2f,
+        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f)),
+    )
+
+    withTransform({
+        rotate(fs.transform.rotation, pivot = Offset(cx, cy))
+    }) {
+        drawRect(
+            color = accent,
+            topLeft = topLeft,
+            size = size,
+            style = strokeStyle,
+        )
+        // 四角小圆点
+        val r = 5f
+        listOf(
+            topLeft,
+            Offset(topLeft.x + w, topLeft.y),
+            Offset(topLeft.x, topLeft.y + h),
+            Offset(topLeft.x + w, topLeft.y + h),
+        ).forEach {
+            drawCircle(Color.White, r, it)
+            drawCircle(accent, r, it, style = Stroke(2f))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  实时笔画
+// ═══════════════════════════════════════════════════════════════
+
+private fun DrawScope.drawLiveStroke(
+    points: List<StrokePoint>,
+    brush: BrushStyle,
+    strokeId: Long?,
+) {
+    when (brush.type) {
+        BrushType.Pen         -> drawSmoothLive(points, brush, StrokeCap.Round,  1f)
+        BrushType.Marker      -> drawSmoothLive(points, brush, StrokeCap.Square, 0.85f)
+        BrushType.Highlighter -> drawSmoothLive(points, brush, StrokeCap.Round,  0.35f)
+        BrushType.Airbrush    -> drawAirbrushLive(points, brush, strokeId)
+        BrushType.Eraser      -> drawSmoothLive(
+            points, brush, StrokeCap.Round, 1f,
+            overrideBlendMode = BlendMode.Clear,
+        )
+    }
+}
+
+private fun DrawScope.drawSmoothLive(
+    points: List<StrokePoint>,
+    brush: BrushStyle,
+    cap: StrokeCap,
+    opacity: Float,
+    overrideColor: Color? = null,
+    overrideAlpha: Float? = null,
+    overrideBlendMode: BlendMode? = null,
+) {
+    val path = points.toSmoothPath()
+    drawPath(
+        path = path,
+        color = overrideColor ?: brush.color,
+        alpha = (overrideAlpha ?: (brush.opacity * opacity)).coerceIn(0f, 1f),
+        style = Stroke(brush.width, cap = cap, join = StrokeJoin.Round),
+        blendMode = overrideBlendMode ?: BlendMode.SrcOver,
+    )
+}
+
+private fun DrawScope.drawAirbrushLive(
+    points: List<StrokePoint>,
+    brush: BrushStyle,
+    strokeId: Long?,
+) {
+    val seed = (strokeId ?: points.firstOrNull()?.timestamp ?: 0L).toInt()
+    val rng = Random(seed)
+    val spread = brush.width * 1.5f
+    val dotR = brush.width * 0.35f
+    val count = (brush.width / 2f).toInt().coerceIn(4, 24)
+    points.forEach { p ->
+        repeat(count) {
+            val a = rng.nextFloat() * 6.2831855f
+            val r = rng.nextFloat() * spread
+            drawCircle(
+                color = brush.color,
+                radius = dotR,
+                center = Offset(p.x + cos(a) * r, p.y + sin(a) * r),
+                alpha = (brush.opacity * 0.12f).coerceIn(0f, 1f),
+            )
+        }
+    }
+}
+
+private fun List<StrokePoint>.toSmoothPath(): Path = Path().apply {
+    if (isEmpty()) return@apply
+    moveTo(this@toSmoothPath[0].x, this@toSmoothPath[0].y)
+    if (size == 1) {
+        lineTo(this@toSmoothPath[0].x + 0.01f, this@toSmoothPath[0].y)
+        return@apply
+    }
+    for (i in 1 until size) {
+        val p = this@toSmoothPath[i - 1]
+        val c = this@toSmoothPath[i]
+        quadraticBezierTo(p.x, p.y, (p.x + c.x) / 2f, (p.y + c.y) / 2f)
+    }
+    val last = this@toSmoothPath.last()
+    lineTo(last.x, last.y)
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  草稿 / 元素框
+// ═══════════════════════════════════════════════════════════════
+
+private fun DrawScope.drawDraftPath(points: List<Offset>) {
+    val path = Path().apply {
+        moveTo(points[0].x, points[0].y)
+        for (i in 1 until points.size) lineTo(points[i].x, points[i].y)
+    }
+    drawPath(
+        path = path,
+        color = Color(0xFF4F46E5),
+        style = Stroke(2f, cap = StrokeCap.Round,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f))),
+    )
+}
+
+private fun DrawScope.drawDraftShapeElement(
+    start: Offset,
+    end: Offset,
+    shapeType: ShapeType,
+    filled: Boolean,
+    brush: BrushStyle,
+) {
+    val color = brush.color
+    val alpha = brush.opacity.coerceIn(0f, 1f)
+    val stroke = Stroke(
+        brush.width,
+        cap = StrokeCap.Round,
+        join = StrokeJoin.Round,
+    )
+    val style = if (filled) Fill else stroke
+    when (shapeType) {
+        ShapeType.Line -> drawLine(
+            color, start, end, brush.width, StrokeCap.Round, alpha = alpha,
+        )
+        ShapeType.Arrow -> {
+            drawLine(color, start, end, brush.width, StrokeCap.Round, alpha = alpha)
+            val dx = end.x - start.x
+            val dy = end.y - start.y
+            val len = kotlin.math.sqrt(dx * dx + dy * dy)
+            if (len > 1f) {
+                val ux = dx / len
+                val uy = dy / len
+                val headLen = (brush.width * 4f).coerceAtMost(len * 0.5f)
+                val headHalf = headLen * 0.6f
+                val bx = end.x - ux * headLen
+                val by = end.y - uy * headLen
+                val px = -uy * headHalf
+                val py = ux * headHalf
+                val path = Path().apply {
+                    moveTo(end.x, end.y)
+                    lineTo(bx + px, by + py)
+                    lineTo(bx - px, by - py)
+                    close()
+                }
+                drawPath(path, color, alpha = alpha)
+            }
+        }
+        ShapeType.Rect -> {
+            val l = minOf(start.x, end.x)
+            val t = minOf(start.y, end.y)
+            val w = kotlin.math.abs(end.x - start.x)
+            val h = kotlin.math.abs(end.y - start.y)
+            drawRect(color, Offset(l, t), Size(w, h), style = style, alpha = alpha)
+        }
+        ShapeType.Ellipse -> {
+            val l = minOf(start.x, end.x)
+            val t = minOf(start.y, end.y)
+            val w = kotlin.math.abs(end.x - start.x)
+            val h = kotlin.math.abs(end.y - start.y)
+            drawOval(color, Offset(l, t), Size(w, h), style = style, alpha = alpha)
+        }
+    }
+}
+
+private fun DrawScope.drawDraftShape(start: Offset, end: Offset, selectTool: SelectTool) {
+    val left = minOf(start.x, end.x)
+    val top = minOf(start.y, end.y)
+    val w = kotlin.math.abs(end.x - start.x)
+    val h = kotlin.math.abs(end.y - start.y)
+    val stroke = Stroke(2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f)))
+    if (selectTool == SelectTool.Ellipse) {
+        drawOval(Color(0xFF4F46E5), Offset(left, top), Size(w, h), style = stroke)
+    } else {
+        drawRect(Color(0xFF4F46E5), Offset(left, top), Size(w, h), style = stroke)
+    }
+}
+
+private fun DrawScope.drawElementFrame(e: DrawElement) {
+    val bounds = e.transformedBounds()
+    if (bounds.isEmpty) return
+    val accent = Color(0xFF4A90E2)
+    drawRect(
+        color = accent,
+        topLeft = Offset(bounds.left, bounds.top),
+        size = Size(bounds.width, bounds.height),
+        style = Stroke(2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))),
+    )
+    val r = 6f
+    listOf(
+        Offset(bounds.left, bounds.top),
+        Offset(bounds.right, bounds.top),
+        Offset(bounds.left, bounds.bottom),
+        Offset(bounds.right, bounds.bottom),
+    ).forEach {
+        drawCircle(Color.White, r, it)
+        drawCircle(accent, r, it, style = Stroke(2f))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  手势 Modifier
+// ═══════════════════════════════════════════════════════════════
+
+fun Modifier.canvasGestures(
+    viewport: Viewport,
+    activeTool: ActiveTool,
+    selectTool: SelectTool,
+    isLiquify: Boolean,
+    floatingBounds: Rect?,
+    elementBounds: Rect?,
+    activeSelection: Selection?,
+    onViewportChange: (Viewport) -> Unit,
+    onStrokeStart: (Offset) -> Unit,
+    onStrokeMove: (Offset) -> Unit,
+    onStrokeEnd: () -> Unit,
+    onStrokeCancel: () -> Unit,
+    onSelectionDraftStart: (Offset) -> Unit,
+    onSelectionDraftMove: (Offset) -> Unit,
+    onSelectionDraftEnd: () -> Unit,
+    onStartFloating: () -> Unit,
+    onShapeDraftStart: (Offset) -> Unit,
+    onShapeDraftMove: (Offset) -> Unit,
+    onShapeDraftEnd: () -> Unit,
+    onLiquifyStart: (Offset) -> Unit,
+    onLiquifyMove: (Offset) -> Unit,
+    onLiquifyEnd: () -> Unit,
+    onElementDragStart: () -> Unit,
+    onElementDragDelta: (Offset) -> Unit,
+    onElementTransform: (zoom: Float, rotation: Float, pan: Offset) -> Unit,
+    onElementDragEnd: () -> Unit,
+    onTap: (Offset) -> Unit,
+    onDoubleTap: () -> Unit,
+    onTapOutsideSelection: () -> Unit = {},
+): Modifier = composed {
+    val vp by rememberUpdatedState(viewport)
+    val tool by rememberUpdatedState(activeTool)
+    val st by rememberUpdatedState(selectTool)
+    val liq by rememberUpdatedState(isLiquify)
+    val fBounds by rememberUpdatedState(floatingBounds)
+    val eBounds by rememberUpdatedState(elementBounds)
+    val sel by rememberUpdatedState(activeSelection)
+
+    var lastTapTime by remember { mutableLongStateOf(0L) }
+    var lastTapPos by remember { mutableStateOf(Offset.Zero) }
+
+    pointerInput(activeTool, selectTool) {
+        awaitEachGesture {
+            val firstDown = awaitFirstDown(requireUnconsumed = false)
+            val startScreen = firstDown.position
+            val startCanvas = vp.toCanvas(startScreen)
+            var prevScreen = startScreen
+            var lastScreen = startScreen
+
+            val canDrag = tool != ActiveTool.Eyedropper
+            val isFloatingHit = canDrag && fBounds?.contains(startCanvas) == true
+
+            // 选区命中：仅 MagicWand 时
+            val isSelectionHit = canDrag && tool == ActiveTool.MagicWand &&
+                                  !isFloatingHit && sel?.contains(startCanvas) == true
+
+            // 元素命中：MagicWand 时排除（那是选区模式）
+            val isElementHit = canDrag && tool != ActiveTool.MagicWand &&
+                                !isFloatingHit && !isSelectionHit &&
+                                eBounds?.contains(startCanvas) == true
+
+            var transformStarted = false
+            var floatingStarted = false
+
+            var isDragging = false
+            var isTransforming = false
+            var strokeStarted = false
+            var selectionDraftStarted = false
+            var shapeStarted = false
+            var liquifyStarted = false
+
+            fun ensureElementStart() {
+                if ((isFloatingHit || isElementHit) && !transformStarted) {
+                    onElementDragStart()
+                    transformStarted = true
+                }
+            }
+
+            fun ensureFloatingStart() {
+                if (isSelectionHit && !floatingStarted) {
+                    onStartFloating()
+                    floatingStarted = true
+                    if (!transformStarted) {
+                        onElementDragStart()
+                        transformStarted = true
+                    }
+                }
+            }
+
+            while (true) {
+                val event = awaitPointerEvent()
+                val pressed = event.changes.filter { it.pressed }
+                if (pressed.isEmpty()) break
+
+                if (pressed.size >= 2) {
+                    ensureElementStart()
+                    ensureFloatingStart()
+                    if (strokeStarted) { onStrokeCancel(); strokeStarted = false }
+                    if (selectionDraftStarted) { onSelectionDraftEnd(); selectionDraftStarted = false }
+                    isDragging = false
+                    isTransforming = true
+
+                    val zoom = event.calculateZoom()
+                    val rotation = event.calculateRotation()
+                    val pan = event.calculatePan()
+
+                    if (isFloatingHit || isElementHit || floatingStarted) {
+                        if (zoom != 1f || rotation != 0f || pan != Offset.Zero) {
+                            onElementTransform(zoom, rotation, vp.deltaToCanvas(pan))
+                        }
+                    } else {
+                        val centroid = event.calculateCentroid()
+                        if (zoom != 1f || pan != Offset.Zero) {
+                            onViewportChange(vp.panBy(pan).zoomAround(centroid, zoom))
+                        }
+                    }
+                    event.changes.forEach { it.consume() }
+                    prevScreen = pressed.first().position
+                    continue
+                }
+
+                val change = pressed.first()
+                val currentScreen = change.position
+                lastScreen = currentScreen
+                val wasDragging = isDragging
+
+                if (!isDragging && !isTransforming) {
+                    if ((currentScreen - startScreen).getDistance() > viewConfiguration.touchSlop) {
+                        isDragging = true
+
+                        if (liq) {
+                            onLiquifyStart(startCanvas)
+                            liquifyStarted = true
+                        } else if (isFloatingHit || isElementHit) {
+                            ensureElementStart()
+                        } else if (isSelectionHit) {
+                            // MagicWand 下拖动选区 → 进入浮动
+                            ensureFloatingStart()
+                        } else {
+                            when (tool) {
+                                ActiveTool.Brush -> {
+                                    onStrokeStart(startCanvas); strokeStarted = true
+                                }
+                                ActiveTool.MagicWand -> if (st != SelectTool.Wand) {
+                                    onSelectionDraftStart(startCanvas)
+                                    selectionDraftStarted = true
+                                }
+                                ActiveTool.Shape -> {
+                                    onShapeDraftStart(startCanvas)
+                                    shapeStarted = true
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+                }
+
+                val delta = if (isDragging && !wasDragging) currentScreen - startScreen
+                            else currentScreen - prevScreen
+                prevScreen = currentScreen
+
+                if (isDragging) {
+                    if (liq && liquifyStarted) {
+                        onLiquifyMove(vp.toCanvas(currentScreen))
+                    } else if (isFloatingHit || isElementHit || floatingStarted) {
+                        onElementDragDelta(vp.deltaToCanvas(delta))
+                    } else {
+                        when (tool) {
+                            ActiveTool.Brush -> onStrokeMove(vp.toCanvas(currentScreen))
+                            ActiveTool.MagicWand -> if (st != SelectTool.Wand) {
+                                onSelectionDraftMove(vp.toCanvas(currentScreen))
+                            }
+                            ActiveTool.Shape -> onShapeDraftMove(vp.toCanvas(currentScreen))
+                            else -> {}
+                        }
+                    }
+                    change.consume()
+                }
+            }
+
+            if (strokeStarted) onStrokeEnd()
+            if (selectionDraftStarted) onSelectionDraftEnd()
+            if (liquifyStarted) onLiquifyEnd()
+            if (transformStarted) onElementDragEnd()
+
+            // 取色模式：无论拖动与否，松手时用最后位置取色
+            if (tool == ActiveTool.Eyedropper) {
+                onTap(vp.toCanvas(lastScreen))
+            } else if (!isDragging && !isTransforming) {
+                val now = System.currentTimeMillis()
+                val isDouble = (now - lastTapTime) < 300L &&
+                               (startScreen - lastTapPos).getDistance() < 80f
+
+                // 点击选区外 → 优先清空选区
+                // 仅在非 MagicWand 时（MagicWand 时点击是「重新选择」，不清空）
+                val clickedOutsideSelection =
+                    sel != null && tool != ActiveTool.MagicWand &&
+                    !isSelectionHit && !isFloatingHit && !isElementHit
+
+                when {
+                    isDouble -> {
+                        onDoubleTap()
+                        lastTapTime = 0L
+                        lastTapPos = Offset.Zero
+                    }
+                    clickedOutsideSelection -> {
+                        onTapOutsideSelection()
+                        lastTapTime = now
+                        lastTapPos = startScreen
+                    }
+                    else -> {
+                        onTap(startCanvas)
+                        lastTapTime = now
+                        lastTapPos = startScreen
+                    }
+                }
+            }
+        }
+    }
+}

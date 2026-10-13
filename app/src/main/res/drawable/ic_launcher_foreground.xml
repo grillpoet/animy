@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+
+    <!-- 蓝色圆角方块，中心 (54,54)，边长 64 -->
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M38,22
+            h32
+            a16,16 0 0 1 16,16
+            v32
+            a16,16 0 0 1 -16,16
+            h-32
+            a16,16 0 0 1 -16,-16
+            v-32
+            a16,16 0 0 1 16,-16 z" />
+
+    <!-- 画板主体：纯白椭圆，中心 (54,54)，尺寸缩小并完美居中 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,54 A14,11 0 1,1 68,54 A14,11 0 1,1 40,54 Z" />
+
+    <!-- 右下拇指孔：与背景同色的蓝色圆，比之前更小，且完全包含在椭圆内 -->
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M58,59 A4,4 0 1,1 66,59 A4,4 0 1,1 58,59 Z" />
+
+    <!-- 颜料点（蓝色，视觉上是画板上的小孔），半径缩小为 2，间距同步缩放 -->
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M42,51 A2,2 0 1,1 46,51 A2,2 0 1,1 42,51 Z" />
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M52,48 A2,2 0 1,1 56,48 A2,2 0 1,1 52,48 Z" />
+    <path
+        android:fillColor="#2563EB"
+        android:pathData="M62,51 A2,2 0 1,1 66,51 A2,2 0 1,1 62,51 Z" />
+</vector>

@@ -1,0 +1,57 @@
+# ==========================================
+# Android / Gradle
+# ==========================================
+build/
+app/build/
+out/
+bin/
+gen/
+release/
+*.apk
+*.aar
+*.ap_
+*.aab
+*.dex
+*.class
+
+.gradle/
+local.properties
+gradle-daemon-jvm.properties
+
+.idea/
+*.iml
+.vscode/
+captures/
+.navigation/
+.externalNativeBuild
+.cxx/
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+lint/reports/
+
+.kotlin/
+
+*.jks
+*.keystore
+!debug.keystore
+
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+
+# ==========================================
+# 本地辅助脚本与生成文件（不要提交）
+# ==========================================
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+dump.py
+modify.py
+a.txt
+code_dump.txt

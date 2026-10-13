@@ -1,0 +1,134 @@
+package com.grillpoet.animy.domain.selection
+
+import android.graphics.Bitmap
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.asImageBitmap
+import com.grillpoet.animy.domain.model.BitmapElement
+import com.grillpoet.animy.domain.model.DrawElement
+import com.grillpoet.animy.domain.model.ElementTransform
+import com.grillpoet.animy.domain.model.VectorStroke
+import com.grillpoet.animy.domain.model.newId
+
+/** 选区与位图、元素的批量操作 */
+object SelectionOps {
+
+    /**
+     * 3x3 膨胀：把选区向外扩展 1 像素。
+     *
+     * 为什么需要：魔棒只选中颜色相近的像素，边缘抗锯齿的
+     * 过渡像素颜色不同被漏掉，抠图后原位置残留一圈描边。
+     * 膨胀 1 像素可以把这些过渡像素一起覆盖，边缘干净。
+     */
+    private fun Selection.dilate1(): Selection {
+        val w = width
+        val h = height
+        val src = mask
+        val out = BooleanArray(w * h)
+
+        for (y in 0 until h) {
+            val rowBase = y * w
+            for (x in 0 until w) {
+                if (!src[rowBase + x]) continue
+
+                val y0 = if (y > 0) y - 1 else 0
+                val y1 = if (y < h - 1) y + 1 else h - 1
+                val x0 = if (x > 0) x - 1 else 0
+                val x1 = if (x < w - 1) x + 1 else w - 1
+
+                for (yy in y0..y1) {
+                    val yyBase = yy * w
+                    for (xx in x0..x1) {
+                        out[yyBase + xx] = true
+                    }
+                }
+            }
+        }
+        return Selection(out, w, h)
+    }
+
+    /** 生成"只有选区内像素、其他全透明"的位图 */
+    fun cropMasked(src: Bitmap, selection: Selection): Bitmap {
+        val w = src.width
+        val h = src.height
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val m = selection.dilate1().mask
+        val out = IntArray(w * h)
+        for (i in m.indices) if (m[i]) out[i] = pixels[i]
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    /** 用 color 填充选区，其他透明 */
+    fun fillMask(selection: Selection, color: Int): Bitmap {
+        val w = selection.width
+        val h = selection.height
+        val m = selection.dilate1().mask
+        val out = IntArray(w * h)
+        for (i in m.indices) if (m[i]) out[i] = color
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    /** 生成"选区之外"的透明位图 —— 从原图层挖掉选区内容 */
+    fun eraseMask(src: Bitmap, selection: Selection): Bitmap {
+        val w = src.width
+        val h = src.height
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val m = selection.dilate1().mask
+        val out = IntArray(w * h)
+        for (i in m.indices) if (!m[i]) out[i] = pixels[i]
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    /**
+     * 删除"完全落在选区内"的矢量笔画 / "中心在选区内"的位图元素。
+     * 用于纯矢量层级的选区删除（保留其它矢量）。
+     */
+    fun deleteInSelection(
+        elements: List<DrawElement>,
+        selection: Selection,
+    ): List<DrawElement> = elements.filterNot { e ->
+        when (e) {
+            is VectorStroke -> e.points.isNotEmpty() &&
+                e.points.all { selection.contains(Offset(it.x, it.y)) }
+            is BitmapElement -> selection.contains(e.center)
+        }
+    }
+
+    /**
+     * 把选区内内容抠成一张 BitmapElement（用于复制/剪切后的拖动）。
+     * 若无任何不透明像素返回 null。
+     */
+    fun extractStamp(
+        src: Bitmap,
+        selection: Selection,
+        label: String = "",
+    ): BitmapElement? {
+        val cropped = cropMasked(src, selection)
+        val w = cropped.width
+        val h = cropped.height
+        val pixels = IntArray(w * h)
+        cropped.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        // 只要有一个不透明像素就保留
+        if (pixels.none { (it ushr 24) != 0 }) return null
+
+        return BitmapElement(
+            id = newId(),
+            transform = ElementTransform.Identity,
+            image = cropped.asImageBitmap(),
+            label = label,
+        )
+    }
+}

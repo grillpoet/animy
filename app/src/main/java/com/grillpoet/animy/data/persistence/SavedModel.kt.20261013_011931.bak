@@ -1,0 +1,61 @@
+package com.grillpoet.animy.data.persistence
+
+import kotlinx.serialization.Serializable
+
+/** 当前存档格式版本。每次不兼容变更 +1。 */
+const val CURRENT_VERSION = 3
+
+@Serializable
+data class SavedProject(
+    val version: Int = CURRENT_VERSION,
+    val name: String,
+    val mode: String = "Animation",
+    val canvasWidth: Int = 1080,
+    val canvasHeight: Int = 1080,
+    val background: Long = 0xFFFFFFFFL,
+    val palette: List<Long> = emptyList(),
+    val frames: List<SavedFrame> = emptyList(),
+)
+
+@Serializable
+data class SavedFrame(
+    val durationMs: Long = 83L,
+    val layers: List<SavedLayer> = emptyList(),
+)
+
+@Serializable
+data class SavedLayer(
+    val name: String = "",
+    val visible: Boolean = true,
+    val alpha: Float = 1f,
+    val elements: List<SavedElement> = emptyList(),
+)
+
+@Serializable
+sealed interface SavedElement { val id: Long }
+
+@Serializable
+data class SavedStroke(
+    override val id: Long,
+    val points: List<Float>,          // [x1, y1, p1, x2, y2, p2, ...]
+    val brushType: String = "Pen",
+    val color: Long,
+    val width: Float,
+    val opacity: Float = 1f,
+    // 元素变换（默认单位阵）
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val scale: Float = 1f,
+    val rotation: Float = 0f,
+) : SavedElement
+
+@Serializable
+data class SavedBitmap(
+    override val id: Long,
+    val imagePath: String,
+    val offsetX: Float = 0f,
+    val offsetY: Float = 0f,
+    val scale: Float = 1f,
+    val rotation: Float = 0f,
+    val label: String = "",
+) : SavedElement

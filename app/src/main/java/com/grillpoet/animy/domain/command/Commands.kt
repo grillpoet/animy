@@ -1,0 +1,278 @@
+package com.grillpoet.animy.domain.command
+
+import androidx.compose.ui.graphics.Color
+import com.grillpoet.animy.domain.model.DrawElement
+import com.grillpoet.animy.domain.model.ElementTransform
+import com.grillpoet.animy.domain.model.Frame
+import com.grillpoet.animy.domain.model.Layer
+import com.grillpoet.animy.domain.model.Project
+import com.grillpoet.animy.domain.model.VectorStroke
+import com.grillpoet.animy.domain.transform.addElement
+import com.grillpoet.animy.domain.transform.addFrame
+import com.grillpoet.animy.domain.transform.addLayer
+import com.grillpoet.animy.domain.transform.moveFrame
+import com.grillpoet.animy.domain.transform.moveLayer
+import com.grillpoet.animy.domain.transform.removeElement
+import com.grillpoet.animy.domain.transform.removeFrameAt
+import com.grillpoet.animy.domain.transform.removeLayerAt
+import com.grillpoet.animy.domain.transform.replaceElement
+import com.grillpoet.animy.domain.transform.replaceElements
+import com.grillpoet.animy.domain.transform.replaceFrame
+import com.grillpoet.animy.domain.transform.replaceLayer
+
+// ═══════════ 元素 ═══════════
+
+/** 添加元素（笔画 / 位图） */
+class AddElementCommand(
+    private val frameIndex: Int,
+    private val layerIndex: Int,
+    private val element: DrawElement,
+    override val label: String = "添加元素",
+) : EditCommand {
+    override fun execute(project: Project): Project = project
+        .frame(frameIndex)?.let { f ->
+            f.layer(layerIndex)?.let { l ->
+                project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.addElement(element)))
+            } ?: project
+        } ?: project
+
+    override fun undo(project: Project): Project = project
+        .frame(frameIndex)?.let { f ->
+            f.layer(layerIndex)?.let { l ->
+                project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.removeElement(element.id)))
+            } ?: project
+        } ?: project
+
+    private fun Project.frame(i: Int) = frames.getOrNull(i)
+    private fun Frame.layer(i: Int) = layers.getOrNull(i)
+}
+
+/** 替换整个图层的元素列表（剪切/删除选区的 flatten 用） */
+class ReplaceLayerElementsCommand(
+    private val frameIndex: Int,
+    private val layerIndex: Int,
+    private val oldElements: List<DrawElement>,
+    private val newElements: List<DrawElement>,
+    override val label: String = "选区操作",
+) : EditCommand {
+    override fun execute(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val l = f.layers.getOrNull(layerIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.replaceElements(newElements)))
+    }
+
+    override fun undo(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val l = f.layers.getOrNull(layerIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.replaceElements(oldElements)))
+    }
+}
+
+/** 变换元素（拖动 Stamp） */
+class TransformElementCommand(
+    private val frameIndex: Int,
+    private val elementId: Long,
+    private val before: ElementTransform,
+    private val after: ElementTransform,
+    override val label: String = "变换",
+) : EditCommand {
+    override fun execute(project: Project) = apply(project, after)
+    override fun undo(project: Project) = apply(project, before)
+
+    private fun apply(project: Project, t: ElementTransform): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val newLayers = f.layers.map { l ->
+            l.replaceElement(elementId) { e ->
+                when (e) {
+                    is VectorStroke -> e.copy(transform = t)
+                    is com.grillpoet.animy.domain.model.BitmapElement -> e.copy(transform = t)
+                    is com.grillpoet.animy.domain.model.ShapeElement -> e.copy(transform = t)
+                }
+            }
+        }
+        return project.replaceFrame(frameIndex, f.copy(layers = newLayers))
+    }
+}
+
+// ═══════════ 帧 ═══════════
+
+class AddFrameCommand(
+    private val frame: Frame,
+    private val at: Int,
+    override val label: String = "新建帧",
+) : EditCommand {
+    override fun execute(project: Project) = project.addFrame(frame, at)
+    override fun undo(project: Project) = project.removeFrameAt(at)
+}
+
+class DeleteFrameCommand(
+    private val index: Int,
+    private val deleted: Frame,
+    override val label: String = "删除帧",
+) : EditCommand {
+    override fun execute(project: Project) = project.removeFrameAt(index)
+    override fun undo(project: Project) = project.addFrame(deleted, index)
+}
+
+class MoveFrameCommand(
+    private val from: Int,
+    private val to: Int,
+    override val label: String = "移动帧",
+) : EditCommand {
+    override fun execute(project: Project) = project.moveFrame(from, to)
+    override fun undo(project: Project) = project.moveFrame(to, from)
+}
+
+class SetFrameDurationCommand(
+    private val index: Int,
+    private val before: Long,
+    private val after: Long,
+    override val label: String = "帧时长",
+) : EditCommand {
+    override fun execute(project: Project) = apply(project, after)
+    override fun undo(project: Project) = apply(project, before)
+
+    private fun apply(project: Project, ms: Long): Project {
+        val f = project.frames.getOrNull(index) ?: return project
+        return project.replaceFrame(index, f.copy(durationMs = ms))
+    }
+}
+
+// ═══════════ 图层 ═══════════
+
+class AddLayerCommand(
+    private val frameIndex: Int,
+    private val layer: Layer,
+    private val at: Int,
+    override val label: String = "新建图层",
+) : EditCommand {
+    override fun execute(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.addLayer(layer, at))
+    }
+    override fun undo(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.removeLayerAt(at))
+    }
+}
+
+class DeleteLayerCommand(
+    private val frameIndex: Int,
+    private val index: Int,
+    private val deleted: Layer,
+    override val label: String = "删除图层",
+) : EditCommand {
+    override fun execute(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.removeLayerAt(index))
+    }
+    override fun undo(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.addLayer(deleted, index))
+    }
+}
+
+class MoveLayerCommand(
+    private val frameIndex: Int,
+    private val from: Int,
+    private val to: Int,
+    override val label: String = "移动图层",
+) : EditCommand {
+    override fun execute(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.moveLayer(from, to))
+    }
+    override fun undo(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.moveLayer(to, from))
+    }
+}
+
+/** 合并下层到上层（下层内容进上层，删掉下层） */
+class MergeDownCommand(
+    private val frameIndex: Int,
+    private val upperIndex: Int,
+    override val label: String = "向下合并",
+) : EditCommand {
+    private var backup: Frame? = null
+
+    override fun execute(project: Project): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        backup = f
+        if (upperIndex !in 1..f.layers.lastIndex) return project
+        val lower = f.layers[upperIndex - 1]
+        val upper = f.layers[upperIndex]
+        val merged = upper.copy(elements = lower.elements + upper.elements)
+        val newLayers = f.layers.toMutableList().apply {
+            this[upperIndex] = merged
+            removeAt(upperIndex - 1)
+        }
+        return project.replaceFrame(frameIndex, f.copy(layers = newLayers))
+    }
+
+    override fun undo(project: Project): Project {
+        val old = backup ?: return project
+        return project.replaceFrame(frameIndex, old)
+    }
+}
+
+class SetLayerAlphaCommand(
+    private val frameIndex: Int,
+    private val layerIndex: Int,
+    private val before: Float,
+    private val after: Float,
+    override val label: String = "图层透明度",
+) : EditCommand {
+    override fun execute(project: Project) = apply(project, after)
+    override fun undo(project: Project) = apply(project, before)
+
+    private fun apply(project: Project, a: Float): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val l = f.layers.getOrNull(layerIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.copy(alpha = a)))
+    }
+}
+
+class SetLayerVisibleCommand(
+    private val frameIndex: Int,
+    private val layerIndex: Int,
+    private val before: Boolean,
+    override val label: String = "图层显隐",
+) : EditCommand {
+    override fun execute(project: Project) = apply(project, !before)
+    override fun undo(project: Project) = apply(project, before)
+
+    private fun apply(project: Project, v: Boolean): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val l = f.layers.getOrNull(layerIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.copy(visible = v)))
+    }
+}
+
+class RenameLayerCommand(
+    private val frameIndex: Int,
+    private val layerIndex: Int,
+    private val before: String,
+    private val after: String,
+    override val label: String = "重命名图层",
+) : EditCommand {
+    override fun execute(project: Project) = apply(project, after)
+    override fun undo(project: Project) = apply(project, before)
+
+    private fun apply(project: Project, n: String): Project {
+        val f = project.frames.getOrNull(frameIndex) ?: return project
+        val l = f.layers.getOrNull(layerIndex) ?: return project
+        return project.replaceFrame(frameIndex, f.replaceLayer(layerIndex, l.copy(name = n)))
+    }
+}
+
+// ═══════════ 项目设置 ═══════════
+
+class SetBackgroundCommand(
+    private val before: Color,
+    private val after: Color,
+    override val label: String = "画布背景",
+) : EditCommand {
+    override fun execute(project: Project) = project.copy(background = after)
+    override fun undo(project: Project) = project.copy(background = before)
+}
