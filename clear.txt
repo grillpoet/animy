@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-AnimY 工具：清理脚本产生的备份文件
+AnimY 工具：清理脚本产生的备份文件（通配符版）
 
-匹配后缀：
-  .bak, .bak2, .bak5 ... .bak21, .bakP3a, .old
-以及：
-  project.json.corrupt   （加载损坏的备份，在 user data 里）
+匹配规则：
+  - 文件名中包含 ".bak"（如 foo.kt.bak、foo.kt.bak2、foo.kt.bakP3a）
+  - 文件名以 ".old" 结尾
 
 默认 dry-run，加 --delete 才真删。
 """
@@ -15,31 +14,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-# 备份后缀模式（字符串前缀匹配）
-BACKUP_SUFFIXES = (
-    ".bak", ".bak2", ".bak5", ".bak6", ".bak7", ".bak8", ".bak9",
-    ".bak10", ".bak11", ".bak12", ".bak13", ".bak14", ".bak15",
-    ".bak16", ".bak17", ".bak18", ".bak19", ".bak20", ".bak21",
-    ".bakP3a",
-    ".old",
-)
-
-# 跳过这些目录
-SKIP_DIRS = {".git", ".gradle", "build", ".idea", "node_modules"}
+SKIP_DIRS = {".git", ".gradle", "build", ".idea", "node_modules", ".kotlin"}
 
 def is_backup(p: Path) -> bool:
-    name = p.name
-    return any(
-        name.endswith(suf) or name.endswith(suf + ".kt") or name.endswith(suf + ".xml")
-        for suf in BACKUP_SUFFIXES
-    )
+    n = p.name
+    return (".bak" in n) or n.endswith(".old")
 
 def collect():
     hits = []
     for p in ROOT.rglob("*"):
         if not p.is_file():
             continue
-        # 跳过 build/.git 等
         if any(part in SKIP_DIRS for part in p.parts):
             continue
         if is_backup(p):
@@ -58,15 +43,12 @@ def main():
         print("没有找到备份文件，无需清理。")
         return 0
 
-    total_bytes = sum(p.stat().st_size for p in hits)
-
+    total = sum(p.stat().st_size for p in hits)
     print(f"{'删除' if args.delete else '找到'} {len(hits)} 个备份文件，"
-          f"共 {total_bytes / 1024:.1f} KB：\n")
+          f"共 {total / 1024:.1f} KB：\n")
 
     for p in hits:
-        rel = p.relative_to(ROOT)
-        size = p.stat().st_size
-        print(f"  {rel}  ({size} B)")
+        print(f"  {p.relative_to(ROOT)}  ({p.stat().st_size} B)")
 
     if not args.delete:
         print()
@@ -82,13 +64,11 @@ def main():
         except Exception as e:
             failed.append((p, e))
 
-    ok = len(hits) - len(failed)
-    print(f"✓ 已删除 {ok} 个文件")
-
+    print(f"✓ 已删除 {len(hits) - len(failed)} / {len(hits)} 个文件")
     if failed:
-        print(f"\n✗ {len(failed)} 个删除失败：")
+        print()
         for p, e in failed:
-            print(f"  {p}: {e}")
+            print(f"  ✗ {p}: {e}")
         return 1
     return 0
 
