@@ -55,3 +55,7 @@ dump.py
 modify.py
 a.txt
 code_dump.txt
+
+# 脚本产生的备份
+*.bak*
+*.old

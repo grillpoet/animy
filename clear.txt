@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""
+AnimY 工具：清理脚本产生的备份文件
+
+匹配后缀：
+  .bak, .bak2, .bak5 ... .bak21, .bakP3a, .old
+以及：
+  project.json.corrupt   （加载损坏的备份，在 user data 里）
+
+默认 dry-run，加 --delete 才真删。
+"""
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+# 备份后缀模式（字符串前缀匹配）
+BACKUP_SUFFIXES = (
+    ".bak", ".bak2", ".bak5", ".bak6", ".bak7", ".bak8", ".bak9",
+    ".bak10", ".bak11", ".bak12", ".bak13", ".bak14", ".bak15",
+    ".bak16", ".bak17", ".bak18", ".bak19", ".bak20", ".bak21",
+    ".bakP3a",
+    ".old",
+)
+
+# 跳过这些目录
+SKIP_DIRS = {".git", ".gradle", "build", ".idea", "node_modules"}
+
+def is_backup(p: Path) -> bool:
+    name = p.name
+    return any(
+        name.endswith(suf) or name.endswith(suf + ".kt") or name.endswith(suf + ".xml")
+        for suf in BACKUP_SUFFIXES
+    )
+
+def collect():
+    hits = []
+    for p in ROOT.rglob("*"):
+        if not p.is_file():
+            continue
+        # 跳过 build/.git 等
+        if any(part in SKIP_DIRS for part in p.parts):
+            continue
+        if is_backup(p):
+            hits.append(p)
+    return sorted(hits)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--delete", action="store_true",
+                    help="实际删除（默认只列出）")
+    args = ap.parse_args()
+
+    hits = collect()
+
+    if not hits:
+        print("没有找到备份文件，无需清理。")
+        return 0
+
+    total_bytes = sum(p.stat().st_size for p in hits)
+
+    print(f"{'删除' if args.delete else '找到'} {len(hits)} 个备份文件，"
+          f"共 {total_bytes / 1024:.1f} KB：\n")
+
+    for p in hits:
+        rel = p.relative_to(ROOT)
+        size = p.stat().st_size
+        print(f"  {rel}  ({size} B)")
+
+    if not args.delete:
+        print()
+        print("以上为 dry-run。确认无误后执行：")
+        print("  python clean_backups.py --delete")
+        return 0
+
+    print()
+    failed = []
+    for p in hits:
+        try:
+            p.unlink()
+        except Exception as e:
+            failed.append((p, e))
+
+    ok = len(hits) - len(failed)
+    print(f"✓ 已删除 {ok} 个文件")
+
+    if failed:
+        print(f"\n✗ {len(failed)} 个删除失败：")
+        for p, e in failed:
+            print(f"  {p}: {e}")
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
