@@ -66,11 +66,14 @@ import com.grillpoet.animy.domain.transform.replaceFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 private const val SAVE_DEBOUNCE_MS = 800L
@@ -99,6 +102,9 @@ class EditorViewModel(
     private var liquifyPixels: IntArray? = null
     private var liquifyBitmap: Bitmap? = null
     private var liquifyLastPoint: Offset? = null
+    /** 串行化液化 warp：快速拖动时多个协程会同时写同一份 pixels。 */
+    private val liquifyMutex = Mutex()
+    private var liquifyJob: Job? = null
 
     init {
         viewModelScope.launch { load() }
@@ -541,7 +547,9 @@ class EditorViewModel(
         viewModelScope.launch {
             val resultElement = withContext(Dispatchers.Default) {
                 runCatching {
-                    val currentBmp = BitmapCompositor.renderLayer(layer, s.project.canvasSize)
+                    // 用 raw（不乘 layer.alpha）—— 图层 alpha 是图层属性，
+                    // 不应被烤进新元素；否则 commit 后原内容会被压暗两次。
+                    val currentBmp = BitmapCompositor.renderLayerRaw(layer, s.project.canvasSize)
                         .asAndroidBitmap()
                     val composed = Bitmap.createBitmap(
                         currentBmp.width, currentBmp.height, Bitmap.Config.ARGB_8888
@@ -699,6 +707,8 @@ class EditorViewModel(
                 activeTool = tool,
                 draftStart = null,
                 draftEnd = null,
+                // 切工具时取消元素选中（仅 Select 模式下允许选中）
+                selectedElementId = null,
                 // 离开 MagicWand 时清空选区（选区和工具耦合）
                 selection = if (tool != ActiveTool.MagicWand) null else it.selection,
             )
@@ -711,7 +721,11 @@ class EditorViewModel(
 
     private fun setBrushType(type: BrushType) {
         _state.update {
-            it.copy(brush = it.brush.copy(type = type), activeTool = ActiveTool.Brush)
+            it.copy(
+                brush = it.brush.copy(type = type),
+                activeTool = ActiveTool.Brush,
+                selectedElementId = null,
+            )
         }
     }
 
@@ -868,20 +882,28 @@ class EditorViewModel(
         val w = session.width
         val h = session.height
 
-        viewModelScope.launch {
+        // 快速拖动时每帧都会起一个 warp 协程。若不加约束，多个协程
+        // 在 Dispatchers.Default 上会真并行读写同一份 pixels，画面会出现
+        // 拉扯 / 拖影。cancel 上一个 + Mutex 兜底，既避免积压又绝对不并发。
+        liquifyJob?.cancel()
+        liquifyJob = viewModelScope.launch {
             withContext(Dispatchers.Default) {
-                LiquifyEngine.applyWarp(
-                    pixels = pixels,
-                    width = w,
-                    height = h,
-                    centerX = point.x,
-                    centerY = point.y,
-                    moveX = dx,
-                    moveY = dy,
-                    radius = s.liquifyBrushRadius,
-                    strength = s.liquifyBrushStrength,
-                )
-                bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+                liquifyMutex.withLock {
+                    ensureActive()
+                    LiquifyEngine.applyWarp(
+                        pixels = pixels,
+                        width = w,
+                        height = h,
+                        centerX = point.x,
+                        centerY = point.y,
+                        moveX = dx,
+                        moveY = dy,
+                        radius = s.liquifyBrushRadius,
+                        strength = s.liquifyBrushStrength,
+                    )
+                    ensureActive()
+                    bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+                }
             }
             _state.update { it.copy(liquifyPreview = bmp.asImageBitmap()) }
         }
@@ -910,6 +932,8 @@ class EditorViewModel(
             label = "液化",
         ))
 
+        liquifyJob?.cancel()
+        liquifyJob = null
         liquifyPixels = null
         liquifyBitmap = null
         liquifyLastPoint = null
@@ -925,6 +949,8 @@ class EditorViewModel(
     }
 
     private fun cancelLiquify() {
+        liquifyJob?.cancel()
+        liquifyJob = null
         liquifyPixels = null
         liquifyBitmap = null
         liquifyLastPoint = null

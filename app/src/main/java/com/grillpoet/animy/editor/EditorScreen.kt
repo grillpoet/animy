@@ -150,9 +150,12 @@ fun EditorScreen(
         s.project.frames.subList(s.currentFrameIndex + 1, end).toList()
     }
 
-    // 当前选中元素
-    val selectedElement: DrawElement? = remember(s.selectedElementId, s.currentFrame) {
-        s.selectedElementId?.let { id ->
+    // 当前选中元素。仅「选择 / 移动」工具下有效；切走工具后自动隐藏虚线框。
+    val selectedElement: DrawElement? = remember(
+        s.selectedElementId, s.currentFrame, s.isSelect,
+    ) {
+        if (!s.isSelect) null
+        else s.selectedElementId?.let { id ->
             s.currentFrame.layers.asSequence()
                 .flatMap { it.elements.asSequence() }
                 .firstOrNull { it.id == id }
@@ -232,7 +235,8 @@ fun EditorScreen(
                             s.isMagicWand && s.selectTool == SelectTool.Wand ->
                                 vm.onIntent(EditorIntent.SelectionTap(p))
                             s.isMagicWand -> {}
-                            else -> vm.onIntent(EditorIntent.SelectElementAt(p))
+                            s.isSelect -> vm.onIntent(EditorIntent.SelectElementAt(p))
+                            else -> vm.onIntent(EditorIntent.DeselectElement)
                         }
                     },
                     onDoubleTap = { viewport = viewport.reset() },

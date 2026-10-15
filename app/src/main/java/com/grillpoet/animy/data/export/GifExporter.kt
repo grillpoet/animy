@@ -107,10 +107,15 @@ object GifExporter {
                 scaled
             } else full
 
-            encoder.setDelay(frame.durationMs.toInt())
-            encoder.addFrame(frameBmp)
-            // 注意：createScaledBitmap 返回的 bitmap 不能立即 recycle
-            // （AnimatedGifEncoder 内部会读它的像素）
+            try {
+                encoder.setDelay(frame.durationMs.toInt())
+                encoder.addFrame(frameBmp)
+                // AnimatedGifEncoder.addFrame 是同步的：内部会立即
+                // 把像素读走并转成调色板索引，返回后即可安全 recycle。
+                // 每帧及时释放，避免长动画 OOM。
+            } finally {
+                if (!frameBmp.isRecycled) frameBmp.recycle()
+            }
         }
         onProgress?.invoke(total, total)
 

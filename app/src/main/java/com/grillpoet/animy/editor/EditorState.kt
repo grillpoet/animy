@@ -13,7 +13,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import com.grillpoet.animy.domain.selection.FloatingSelection
 import com.grillpoet.animy.domain.selection.Selection
 
-enum class ActiveTool { Brush, Eyedropper, MagicWand, Liquify, Shape }
+enum class ActiveTool { Brush, Eyedropper, MagicWand, Liquify, Shape, Select }
 enum class GestureMode { Idle, Drawing, Selecting, Transforming, Panning }
 enum class SelectTool { Wand, Lasso, Rect, Ellipse }
 
@@ -102,6 +102,7 @@ data class EditorState(
     val isEyedropper: Boolean get() = activeTool == ActiveTool.Eyedropper
     val isMagicWand: Boolean get() = activeTool == ActiveTool.MagicWand
     val isShape: Boolean get() = activeTool == ActiveTool.Shape
+    val isSelect: Boolean get() = activeTool == ActiveTool.Select
 
     val canDraw: Boolean
         get() = activeTool == ActiveTool.Brush &&

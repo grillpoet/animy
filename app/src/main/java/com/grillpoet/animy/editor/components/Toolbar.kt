@@ -53,6 +53,7 @@ import com.grillpoet.animy.ui.components.PlayIcon
 import com.grillpoet.animy.ui.components.PlusIcon
 import com.grillpoet.animy.ui.components.RedoIcon
 import com.grillpoet.animy.ui.components.SaveIcon
+import com.grillpoet.animy.ui.components.SelectIcon
 import com.grillpoet.animy.ui.components.UndoIcon
 import com.grillpoet.animy.ui.components.VideoIcon
 
@@ -129,6 +130,19 @@ fun Toolbar(
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                    }
+                }
+
+                IconWithTip(label = "选择 / 移动") {
+                    IconCircle(
+                        active = activeTool == ActiveTool.Select,
+                        onClick = { onTool(ActiveTool.Select) },
+                    ) {
+                        SelectIcon(
+                            tint = if (activeTool == ActiveTool.Select)
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
 

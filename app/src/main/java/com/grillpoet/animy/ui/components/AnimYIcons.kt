@@ -9,6 +9,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -544,5 +545,42 @@ private fun DrawScope.drawShapeIcon(tint: Color) {
     // 斜线（对角）
     drawLine(tint, Offset(w * 0.15f, h * 0.45f), Offset(w * 0.85f, h * 0.15f),
         stroke, StrokeCap.Round)
+}
+
+@Composable fun SelectIcon(tint: Color, m: Modifier = Modifier, s: Dp = 22.dp) =
+    IconCanvas(m, s) { drawSelectIcon(tint) }
+
+/**
+ * 「选择 / 移动」图标：虚线选中框 + 中心十字。
+ * 虚线框表达「元素被选中」，十字表达「可移动 / 变换」。
+ */
+private fun DrawScope.drawSelectIcon(tint: Color) {
+    val w = size.width
+    val h = size.height
+    val stroke = sw() * 0.9f
+    val pad = w * 0.16f
+    drawRect(
+        color = tint,
+        topLeft = Offset(pad, pad),
+        size = Size(w - pad * 2f, h - pad * 2f),
+        style = StrokeStyle(
+            width = stroke,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 3f)),
+        ),
+    )
+    drawLine(
+        tint,
+        Offset(w * 0.36f, h * 0.5f),
+        Offset(w * 0.64f, h * 0.5f),
+        stroke,
+        StrokeCap.Round,
+    )
+    drawLine(
+        tint,
+        Offset(w * 0.5f, h * 0.36f),
+        Offset(w * 0.5f, h * 0.64f),
+        stroke,
+        StrokeCap.Round,
+    )
 }
 

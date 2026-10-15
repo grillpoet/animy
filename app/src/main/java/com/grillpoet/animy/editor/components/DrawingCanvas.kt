@@ -132,7 +132,10 @@ fun DrawingCanvas(
         else if (canvasSize.width <= 0 || canvasSize.height <= 0) null
         else runCatching {
             val layer = frame.layers.getOrNull(currentLayerIndex) ?: return@runCatching null
-            renderCache.getOrRenderLayer(layer, canvasSize)
+            // 用 raw（不乘 layer.alpha）。图层 alpha 在下面 saveLayer 的
+            // Paint 里统一应用 —— 否则擦除预览时当前层会突然变满不透明，
+            // 松手又跳回半透明，视觉上闪一下。
+            BitmapCompositor.renderLayerRaw(layer, canvasSize)
         }.getOrNull()
     }
 
@@ -231,10 +234,11 @@ fun DrawingCanvas(
 
             if (isEraseLive && otherLayersBmp != null && currentLayerBmp != null) {
                 drawImage(otherLayersBmp)
+                val layerAlpha = frame.layers.getOrNull(currentLayerIndex)?.alpha ?: 1f
                 drawIntoCanvas { canvas ->
                     canvas.saveLayer(
                         androidx.compose.ui.geometry.Rect(0f, 0f, cw, ch),
-                        Paint(),
+                        Paint().apply { alpha = layerAlpha.coerceIn(0f, 1f) },
                     )
                     drawImage(currentLayerBmp)
                     drawLiveStroke(liveStroke, liveBrush, liveStrokeId)
@@ -597,8 +601,8 @@ fun Modifier.canvasGestures(
             val isSelectionHit = canDrag && tool == ActiveTool.MagicWand &&
                                   !isFloatingHit && sel?.contains(startCanvas) == true
 
-            // 元素命中：MagicWand 时排除（那是选区模式）
-            val isElementHit = canDrag && tool != ActiveTool.MagicWand &&
+            // 元素命中：仅「选择 / 移动」工具下才允许拖动已选中的元素
+            val isElementHit = canDrag && tool == ActiveTool.Select &&
                                 !isFloatingHit && !isSelectionHit &&
                                 eBounds?.contains(startCanvas) == true
 

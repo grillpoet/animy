@@ -9,6 +9,8 @@ import com.grillpoet.animy.domain.model.ProjectMode
 import com.grillpoet.animy.domain.model.ShapeElement
 import com.grillpoet.animy.domain.model.VectorStroke
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -37,6 +39,17 @@ class ProjectRepository(private val context: Context) {
     }
 
     private val root: File get() = File(context.filesDir, "projects")
+
+    /**
+     * 写操作互斥锁。
+     *
+     * save / rename / delete / duplicate 都会触碰 project.json 和
+     * images/ 目录。EditorViewModel 里有三条路径会调 save
+     * （防抖、ON_PAUSE、返回前），协程 cancel 是协作式的，
+     * 一旦进入 IO 阻塞写就不再检查取消 —— 没有这把锁会出现
+     * 两个 save 抢写同一个 project.json.tmp，导致存档半写 / 错乱。
+     */
+    private val ioMutex = Mutex()
 
     // ─────────────── 查询 ───────────────
 
@@ -99,24 +112,26 @@ class ProjectRepository(private val context: Context) {
     // ─────────────── 写 ───────────────
 
     suspend fun save(project: Project, id: String): String = withContext(Dispatchers.IO) {
-        val dir = File(root, id).apply { mkdirs() }
-        val imagesDir = File(dir, "images").apply { mkdirs() }
+        ioMutex.withLock {
+            val dir = File(root, id).apply { mkdirs() }
+            val imagesDir = File(dir, "images").apply { mkdirs() }
 
-        val saved = project.toSaved(imagesDir)
-        val target = File(dir, "project.json")
-        val tmp = File(dir, "project.json.tmp")
-        tmp.writeText(json.encodeToString(saved))
+            val saved = project.toSaved(imagesDir)
+            val target = File(dir, "project.json")
+            val tmp = File(dir, "project.json.tmp")
+            tmp.writeText(json.encodeToString(saved))
 
-        atomicMove(tmp, target)
+            atomicMove(tmp, target)
 
-        // 缩略图失败不阻断保存
-        runCatching {
-            val thumb = renderThumb(project)
-            File(dir, "thumb.png").outputStream().use { out ->
-                thumb.asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 85, out)
+            // 缩略图失败不阻断保存
+            runCatching {
+                val thumb = renderThumb(project)
+                File(dir, "thumb.png").outputStream().use { out ->
+                    thumb.asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 85, out)
+                }
             }
+            id
         }
-        id
     }
 
     /** 原子替换。失败时抛异常，避免静默丢数据。 */
@@ -138,21 +153,28 @@ class ProjectRepository(private val context: Context) {
     }
 
     suspend fun rename(id: String, newName: String): Boolean = withContext(Dispatchers.IO) {
-        val dir = File(root, id)
-        val file = File(dir, "project.json")
-        if (!file.exists()) return@withContext false
-        runCatching {
-            val saved = json.decodeFromString<SavedProject>(file.readText())
-            val updated = saved.copy(name = newName)
-            val tmp = File(dir, "project.json.tmp")
-            tmp.writeText(json.encodeToString(updated))
-            atomicMove(tmp, file)
-            true
-        }.getOrDefault(false)
+        ioMutex.withLock {
+            val dir = File(root, id)
+            val file = File(dir, "project.json")
+            if (!file.exists()) {
+                false
+            } else {
+                runCatching {
+                    val saved = json.decodeFromString<SavedProject>(file.readText())
+                    val updated = saved.copy(name = newName)
+                    val tmp = File(dir, "project.json.tmp")
+                    tmp.writeText(json.encodeToString(updated))
+                    atomicMove(tmp, file)
+                    true
+                }.getOrDefault(false)
+            }
+        }
     }
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
-        File(root, id).deleteRecursively()
+        ioMutex.withLock {
+            File(root, id).deleteRecursively()
+        }
         Unit
     }
 
@@ -162,38 +184,40 @@ class ProjectRepository(private val context: Context) {
      * 深拷贝：读原 JSON，改 name，写到新目录。图片位图按需复制。
      */
     suspend fun duplicate(id: String): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val srcDir = File(root, id)
-            if (!srcDir.exists()) return@runCatching null
+        ioMutex.withLock {
+            runCatching {
+                val srcDir = File(root, id)
+                if (!srcDir.exists()) return@runCatching null
 
-            val newId = "copy-${System.currentTimeMillis()}-${(1000..9999).random()}"
-            val dstDir = File(root, newId).apply { mkdirs() }
+                val newId = "copy-${System.currentTimeMillis()}-${(1000..9999).random()}"
+                val dstDir = File(root, newId).apply { mkdirs() }
 
-            // 复制 images 目录
-            val srcImages = File(srcDir, "images")
-            if (srcImages.exists()) {
-                val dstImages = File(dstDir, "images").apply { mkdirs() }
-                srcImages.listFiles()?.forEach { f ->
-                    f.copyTo(File(dstImages, f.name), overwrite = true)
+                // 复制 images 目录
+                val srcImages = File(srcDir, "images")
+                if (srcImages.exists()) {
+                    val dstImages = File(dstDir, "images").apply { mkdirs() }
+                    srcImages.listFiles()?.forEach { f ->
+                        f.copyTo(File(dstImages, f.name), overwrite = true)
+                    }
                 }
-            }
 
-            // 读原 JSON，改 name
-            val srcJson = File(srcDir, "project.json")
-            val saved = json.decodeFromString<SavedProject>(srcJson.readText())
-            val newName = if (saved.name.contains(" 副本")) saved.name
-                          else "${saved.name} 副本"
-            val updated = saved.copy(name = newName)
-            File(dstDir, "project.json").writeText(json.encodeToString(updated))
+                // 读原 JSON，改 name
+                val srcJson = File(srcDir, "project.json")
+                val saved = json.decodeFromString<SavedProject>(srcJson.readText())
+                val newName = if (saved.name.contains(" 副本")) saved.name
+                              else "${saved.name} 副本"
+                val updated = saved.copy(name = newName)
+                File(dstDir, "project.json").writeText(json.encodeToString(updated))
 
-            // 复制缩略图
-            val srcThumb = File(srcDir, "thumb.png")
-            if (srcThumb.exists()) {
-                srcThumb.copyTo(File(dstDir, "thumb.png"), overwrite = true)
-            }
+                // 复制缩略图
+                val srcThumb = File(srcDir, "thumb.png")
+                if (srcThumb.exists()) {
+                    srcThumb.copyTo(File(dstDir, "thumb.png"), overwrite = true)
+                }
 
-            newId
-        }.getOrNull()
+                newId
+            }.getOrNull()
+        }
     }
 
     // ─────────────── 缩略图 ───────────────
